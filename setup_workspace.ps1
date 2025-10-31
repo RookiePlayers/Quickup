@@ -232,18 +232,17 @@ function Invoke-GitClone {
     [Parameter(Mandatory=$false)][string]$Folder
   )
 
-  # Optional debug logs for HTTPS authentication or network issues
-  # $env:GIT_TRACE = "1"
-  # $env:GIT_CURL_VERBOSE = "1"
-
-  # Determine target dir if not provided
+  # Resolve target directory if not provided
   $target = if ($Folder) { $Folder } else {
     $n = [IO.Path]::GetFileNameWithoutExtension($Repo.TrimEnd('/'))
     if ($n.EndsWith(".git")) { $n = $n.Substring(0, $n.Length - 4) }
     $n
   }
 
-  # Handle existing folder
+  Write-Info ("Current directory: " + (Get-Location))
+  Write-Info ("Target folder: " + $target)
+
+  # If target exists, ask what to do
   if (Test-Path $target) {
     Write-Warn "Destination path '$target' already exists."
     $choice = Read-Host "Choose: [S]kip, [O]verwrite, [R]ename (default: S)"
@@ -269,42 +268,26 @@ function Invoke-GitClone {
     }
   }
 
-  $args = @('clone', '--progress', $Repo, $target)
-  Write-Info "Running: git $($args -join ' ')"
-  $out = & git @args 2>&1
-  $code = $LASTEXITCODE
-
-  if ($code -ne 0) {
-    Write-Err "git clone failed (exit $code) for: $Repo"
-    if ($out) { $out | ForEach-Object { Write-Host $_ } }
-    Write-Warn "Common causes:
-    - Auth required (private repo): use HTTPS with a Personal Access Token (PAT) or set up SSH keys.
-    - Wrong URL: verify the exact repo URL.
-    - Proxy/corporate network issues: set git proxy or try another network.
-    - Existing folder conflicts or permissions.
-    - Long filenames on older Windows setups: git config --system core.longpaths true."
-    return $false
+  # Run git clone safely (don’t throw)
+  $oldEAP = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $args = @('clone','--progress', $Repo, $target)
+    Write-Info "Running: git $($args -join ' ')"
+    $out = & git @args 2>&1
+    $code = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $oldEAP
   }
 
-  if ($out) { $out | ForEach-Object { Write-Host $_ } }
-  Write-Ok "Clone succeeded."
-  return $true
-}
-else { $args += @($Repo) }
-
-  Write-Info "Running: git $($args -join ' ')"
-  $out = & git @args 2>&1
-  $code = $LASTEXITCODE
-
   if ($code -ne 0) {
     Write-Err "git clone failed (exit $code) for: $Repo"
     if ($out) { $out | ForEach-Object { Write-Host $_ } }
     Write-Warn "Common causes:
-    - Auth required (private repo): use HTTPS with a Personal Access Token (PAT) or set up SSH keys.
-    - Wrong URL: verify the exact repo URL.
-    - Proxy/corporate network issues: set git proxy or try another network.
-    - Existing folder conflicts or permissions.
-    - Long filenames on older Windows setups: git config --system core.longpaths true."
+    - Folder exists / permissions (check the path above).
+    - Private repo auth (use PAT on HTTPS or set up SSH keys).
+    - Proxy / firewall (configure git proxy).
+    - Long paths: run once → git config --system core.longpaths true"
     return $false
   }
 
