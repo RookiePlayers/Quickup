@@ -1,0 +1,50 @@
+# Quickup configuration file — defines workspace setup and automation behavior.
+
+# The name of the workspace folder to create.
+QUICKUP_WORKSPACE: my_workspace
+
+# List of repositories to clone.
+QUICKUP_REPOS:
+  - https://github.com/org/repo1.git
+  - https://github.com/org/repo2.git
+
+# Optional folder names to clone each repo into (must match order of QUICKUP_REPOS).
+QUICKUP_REPO_FOLDERS:
+  - repo1_folder
+  - repo2_folder
+
+# Node.js version to install using NVM.
+QUICKUP_NODE_VERSION: "16"
+
+# Java version to install using SDKMAN or package manager.
+QUICKUP_JAVA_VERSION: "11"
+
+# Flutter SDK version to install.
+QUICKUP_FLUTTER_VERSION: "3.0.0"
+
+# 1 = simulate all steps (no real changes).
+QUICKUP_DRY_RUN: 1
+
+# 1 = disable log creation.
+QUICKUP_NO_LOG: 1
+
+# 1 = skip installing language toolchains (Node, Java, Flutter).
+QUICKUP_SKIP_TOOLCHAINS: 0
+
+# Path or filename for the log file.
+QUICKUP_LOG_FILE: quickup.log
+
+# 1 = auto-accept all confirmations, 0 = prompt for confirmation.
+QUICKUP_ASSUME_YES: 0
+
+# Color mode for output: auto, always, or never.
+QUICKUP_COLOR: always
+
+# 1 = show debug-level information.
+QUICKUP_DEBUG: 0
+
+# 1 = show verbose command details.
+QUICKUP_VERBOSE: 0
+
+# 1 = enable the final “Run” step (make up, docker compose, etc).
+QUICKUP_ENABLE_RUN: 0

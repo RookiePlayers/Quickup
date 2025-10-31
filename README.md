@@ -12,7 +12,8 @@ It runs on **macOS**, **Linux**, **Windows**, and **WSL**, and does the followin
 - Detects each repo type (Node, Flutter, Python, Java, etc.)  
 - Verifies or installs dependencies like **Docker**, **Make**, and **Git**  
 - Optionally installs ecosystem managers like **nvm**, **sdkman**, or **fvm**  
-- Auto-detects how to run each project (Makefile, Docker, npm, etc.)
+- Auto-detects how to run each project (Makefile, Docker, npm, etc.)  
+- Supports **non-interactive config files** (.env, .json, or .yaml)
 
 ---
 
@@ -26,6 +27,73 @@ Clone this repository and run the setup script:
 chmod +x setup_workspace.sh
 ./setup_workspace.sh
 ```
+
+You’ll be guided through an interactive setup flow.
+
+---
+
+## Config File Support
+
+Quickup now supports loading configuration from **.env**, **.json**, or **.yaml** files for non-interactive automation.
+
+### Example `.env`
+```bash
+# Workspace setup
+QUICKUP_WORKSPACE="my_workspace"
+QUICKUP_REPOS="https://github.com/org/repo1.git,https://github.com/org/repo2.git"
+QUICKUP_REPO_FOLDERS="repo1_folder,repo2_folder"
+
+# Tool versions
+QUICKUP_NODE_VERSION="16"
+QUICKUP_JAVA_VERSION="11"
+QUICKUP_FLUTTER_VERSION="3.0.0"
+
+# Flags
+QUICKUP_DRY_RUN=1
+QUICKUP_NO_LOG=1
+QUICKUP_SKIP_TOOLCHAINS=0
+QUICKUP_LOG_FILE="quickup.log"
+QUICKUP_ASSUME_YES=1
+QUICKUP_COLOR=always
+QUICKUP_DEBUG=0
+QUICKUP_VERBOSE=0
+QUICKUP_ENABLE_RUN=0
+```
+
+### Example `.json`
+```json
+{
+  "QUICKUP_WORKSPACE": "my_workspace",
+  "QUICKUP_REPOS": ["https://github.com/org/repo1.git", "https://github.com/org/repo2.git"],
+  "QUICKUP_REPO_FOLDERS": ["repo1_folder", "repo2_folder"],
+  "QUICKUP_NODE_VERSION": "16",
+  "QUICKUP_JAVA_VERSION": "11",
+  "QUICKUP_FLUTTER_VERSION": "3.0.0",
+  "QUICKUP_ENABLE_RUN": 0
+}
+```
+
+### Example `.yaml`
+```yaml
+QUICKUP_WORKSPACE: "my_workspace"
+QUICKUP_REPOS:
+  - "https://github.com/org/repo1.git"
+  - "https://github.com/org/repo2.git"
+QUICKUP_REPO_FOLDERS:
+  - "repo1_folder"
+  - "repo2_folder"
+QUICKUP_NODE_VERSION: "16"
+QUICKUP_JAVA_VERSION: "11"
+QUICKUP_FLUTTER_VERSION: "3.0.0"
+QUICKUP_ENABLE_RUN: 0
+```
+
+### Usage with Config File
+```bash
+./setup_workspace.sh --config-file .env.example
+```
+
+When a config file is used, Quickup automatically switches to **non-interactive mode**, assuming “yes” to prompts and skipping user input.
 
 ---
 
@@ -66,17 +134,18 @@ Quickup automatically detects whether you’re on native Linux or WSL and adjust
 
 ## Windows (PowerShell)
 
-To run directly in PowerShell without cloning:
+Run Quickup directly from PowerShell or CMD without cloning:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; iex (irm 'https://raw.githubusercontent.com/RookiePlayers/Quickup/main/setup_workspace.ps1')"
 ```
-or
-```cmd
-powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; iex (irm 'https://raw.githubusercontent.com/RookiePlayers/Quickup/main/setup_workspace.ps1')"
+
+### With Config File
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup_workspace.ps1 -ConfigFile .\.env.example
 ```
 
-This downloads and executes the latest version of the setup script.
+This will load `.env`, `.json`, or `.yaml` configuration automatically and skip all interactive prompts.
 
 ---
 
@@ -84,30 +153,29 @@ This downloads and executes the latest version of the setup script.
 
 | Feature | Description |
 |----------|-------------|
-| **Multi-repo cloning** | Clone as many repositories as needed in one step |
+| **Multi-repo cloning** | Clone multiple repositories in one step |
 | **Smart dependency check** | Verifies and installs Git, Docker, Make automatically |
-| **Language auto-detection** | Detects Node, Flutter, Python, Java, and sets up appropriate tools |
-| **Interactive prompts** | Guided setup with retry logic and safe defaults |
-| **Cross-platform support** | Works on macOS, Linux, WSL, and Windows PowerShell |
-| **Environment auto-config** | Adds missing PATH and environment variables automatically |
-| **Run helper** | Detects project run command (`make up`, `docker compose`, `npm start`, etc.) |
+| **Language auto-detection** | Detects Node, Flutter, Python, Java, and installs required tools |
+| **Config file mode** | Use `.env`, `.json`, or `.yaml` files to automate setup |
+| **Cross-platform** | Works on macOS, Linux, WSL, and Windows |
+| **Environment auto-config** | Adds missing PATH and env vars automatically |
+| **Run helper** | Detects and runs your project via `make up`, `docker compose up`, or `npm start` |
 
 ---
 
 ## Example Use Case
 When a new developer joins your team:
 1. They install Quickup (via Brew, curl, or PowerShell).  
-2. Run `quickup`.  
-3. Enter a workspace name (e.g. `team-portal`).  
-4. Add repo URLs for frontend and backend.  
-5. Quickup installs dependencies, configures paths, and runs the selected project.
+2. Run `quickup` or the PowerShell command above.  
+3. Enter (or pre-define) a workspace name and repositories.  
+4. Quickup installs dependencies, configures toolchains, and optionally runs the project.
 
-Done — no more manual setup headaches.
+No more manual setup headaches.
 
 ---
 
 ## Troubleshooting
-- If a tool (like Git or Docker) is not detected after installation, restart your shell or run:
+- If a tool (like Git or Docker) isn’t detected after install, restart your shell:
   ```bash
   source ~/.bashrc  # or ~/.zshrc depending on shell
   ```
@@ -117,9 +185,9 @@ Done — no more manual setup headaches.
 
 ## Contributing
 Pull requests and issues are welcome!  
-Please ensure all contributions are tested on at least **two platforms** (e.g. macOS + Windows or Linux + WSL).
+Please ensure contributions are tested on at least **two platforms** (e.g. macOS + Windows or Linux + WSL).
 
 ---
 
 ## License
-MIT © [RookiePlayers](https://github.com/RookiePlayers)
+MIT © [octech](https://github.com/RookiePlayers)

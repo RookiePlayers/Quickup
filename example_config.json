@@ -1,0 +1,23 @@
+{
+  "QUICKUP_WORKSPACE": "my_workspace",
+  "QUICKUP_REPOS": [
+    "https://github.com/org/repo1.git",
+    "https://github.com/org/repo2.git"
+  ],
+  "QUICKUP_REPO_FOLDERS": [
+    "repo1_folder",
+    "repo2_folder"
+  ],
+  "QUICKUP_NODE_VERSION": "16",
+  "QUICKUP_JAVA_VERSION": "11",
+  "QUICKUP_FLUTTER_VERSION": "3.0.0",
+  "QUICKUP_DRY_RUN": 1,
+  "QUICKUP_NO_LOG": 1,
+  "QUICKUP_SKIP_TOOLCHAINS": 0,
+  "QUICKUP_LOG_FILE": "quickup.log",
+  "QUICKUP_ASSUME_YES": 0,
+  "QUICKUP_COLOR": "always",
+  "QUICKUP_DEBUG": 0,
+  "QUICKUP_VERBOSE": 0,
+  "QUICKUP_ENABLE_RUN": 0
+}

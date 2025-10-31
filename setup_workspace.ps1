@@ -1,10 +1,15 @@
 #Requires -Version 5.1
+param(
+  [string]$ConfigFile
+)
+
 # Quickup Windows Setup (self-contained, resilient)
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 # Prevent PS7+ from promoting native non-zero exits to terminating errors
 $global:PSNativeCommandUseErrorActionPreference = $false
 
+# -------------------- Logging helpers --------------------
 function Write-Info { param([string]$m) Write-Host "[INFO] $m" -ForegroundColor Cyan }
 function Write-Ok   { param([string]$m) Write-Host "[DONE] $m" -ForegroundColor Green }
 function Write-Warn { param([string]$m) Write-Host "[WARN] $m" -ForegroundColor Yellow }
@@ -12,8 +17,22 @@ function Write-Err  { param([string]$m) Write-Host "[ERR ] $m" -ForegroundColor 
 
 function Test-Command { param([string]$Name) return [bool](Get-Command $Name -ErrorAction SilentlyContinue) }
 
+# -------------------- Non-interactive controls --------------------
+# Defaults (preserve current behavior = interactive)
+$script:NonInteractive = $false
+$script:AssumeYes = $false
+
+# Respect env if present (used when config file loads too)
+if ($env:QUICKUP_NONINTERACTIVE -and $env:QUICKUP_NONINTERACTIVE -ne "0") { $script:NonInteractive = $true }
+if ($env:QUICKUP_ASSUME_YES -and $env:QUICKUP_ASSUME_YES -ne "0") { $script:AssumeYes = $true }
+
+# -------------------- Prompt helpers (respect non-interactive) --------------------
 function Prompt-YesNo {
   param([Parameter(Mandatory=$true)][string]$Message, [bool]$Default=$false) # default = No
+  if ($script:NonInteractive) {
+    # In strict non-interactive mode, answer yes if AssumeYes, else default
+    return ($(if ($script:AssumeYes) { $true } else { $Default }))
+  }
   $suffix = if ($Default) { "[Y/n]" } else { "[y/N]" }
   while ($true) {
     $resp = Read-Host "$Message $suffix"
@@ -32,8 +51,14 @@ function Read-InputWithRetry {
   param(
     [Parameter(Mandatory=$true)][string]$Prompt,
     [scriptblock]$Validate = { param($x) return ($null -ne $x -and $x.Trim() -ne "") },
-    [int]$Attempts = 5
+    [int]$Attempts = 5,
+    [string]$DefaultValue = $null
   )
+  if ($script:NonInteractive) {
+    # In non-interactive: if DefaultValue provided, return it; else return $null (caller decides)
+    if ($null -ne $DefaultValue -and $DefaultValue.Trim() -ne "") { return $DefaultValue }
+    return $null
+  }
   for ($i=1; $i -le $Attempts; $i++) {
     $val = Read-Host $Prompt
     try {
@@ -46,6 +71,7 @@ function Read-InputWithRetry {
   return $null
 }
 
+# -------------------- PATH helpers --------------------
 function Refresh-EnvPath {
   $machine = [Environment]::GetEnvironmentVariable('Path','Machine')
   $user    = [Environment]::GetEnvironmentVariable('Path','User')
@@ -58,7 +84,134 @@ function Try-AddPath { param([string]$Dir)
   }
 }
 
-# ---- Package managers ----
+# -------------------- Config loading (.env / .json / .yaml) --------------------
+# Source of config: param -ConfigFile wins, else env QUICKUP_CONFIG_FILE
+if (-not $ConfigFile -and $env:QUICKUP_CONFIG_FILE) { $ConfigFile = $env:QUICKUP_CONFIG_FILE }
+
+# Store resolved config here (string keys -> values or arrays)
+$script:Cfg = [ordered]@{}
+
+function Load-EnvConfig([string]$Path) {
+  Get-Content -Raw -Path $Path -ErrorAction Stop | ForEach-Object {
+    $_ -split "`n" | ForEach-Object {
+      $line = $_.Trim()
+      if (-not $line) { return }
+      if ($line.StartsWith("#")) { return }
+      if ($line -notmatch "=") { return }
+      $idx = $line.IndexOf("=")
+      if ($idx -lt 1) { return }
+      $key = $line.Substring(0, $idx).Trim()
+      $val = $line.Substring($idx + 1).Trim()
+      if ($key.StartsWith("export ")) { $key = $key.Substring(7).Trim() }
+      if (-not [string]::IsNullOrWhiteSpace($key)) { $script:Cfg[$key] = $val }
+    }
+  }
+}
+
+function Load-JsonConfig([string]$Path) {
+  try {
+    $obj = Get-Content -Raw -Path $Path -ErrorAction Stop | ConvertFrom-Json
+  } catch { Write-Err "Invalid JSON config: $($PSItem.Exception.Message)"; return }
+  function Flatten($prefix, $value) {
+    if ($null -eq $value) { return @() }
+    if ($value -is [System.Collections.IDictionary]) {
+      $pairs = @()
+      foreach ($k in $value.Keys) {
+        $pairs += Flatten ($(if ($prefix) { "$prefix`_$k" } else { "$k" })), $value[$k]
+      }
+      return $pairs
+    } elseif ($value -is [System.Collections.IEnumerable] -and -not ($value -is [string])) {
+      # keep arrays intact for known keys; but store as array
+      return @([pscustomobject]@{ __arr__ = $true; key = $prefix; values = @($value) })
+    } else {
+      return @([pscustomobject]@{ key = $prefix; value = "$value" })
+    }
+  }
+  $pairs = Flatten "" $obj
+  foreach ($p in $pairs) {
+    if ($p.__arr__) {
+      $script:Cfg[$p.key] = @($p.values)
+    } elseif ($p.key) {
+      $script:Cfg[$p.key] = $p.value
+    }
+  }
+}
+
+function Load-YamlConfig([string]$Path) {
+  # Prefer yq if available: yq -o=json . file | ConvertFrom-Json
+  if (Test-Command yq) {
+    try {
+      $json = & yq -o=json '.' $Path 2>$null
+      if (-not $json) { Write-Err "yq failed to convert YAML."; return }
+      $tmp = $env:TEMP + "\quickup_yml.json"
+      Set-Content -Path $tmp -Value $json -Encoding UTF8
+      Load-JsonConfig $tmp
+      Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+      return
+    } catch {
+      Write-Warn "yq not usable for YAML: $($_.Exception.Message)"
+    }
+  }
+  # Try PowerShell 7+ ConvertFrom-Yaml if present
+  if (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue) {
+    try {
+      $obj = Get-Content -Raw -Path $Path -ErrorAction Stop | ConvertFrom-Yaml
+      # Reuse JSON flattener by converting the object to JSON and back
+      $json = $obj | ConvertTo-Json -Depth 20
+      $tmp = $env:TEMP + "\quickup_yml2.json"
+      Set-Content -Path $tmp -Value $json -Encoding UTF8
+      Load-JsonConfig $tmp
+      Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+      return
+    } catch {
+      Write-Err "Failed to parse YAML via ConvertFrom-Yaml: $($_.Exception.Message)"
+      return
+    }
+  }
+
+  Write-Err "YAML config requires 'yq' or PowerShell 'ConvertFrom-Yaml'."
+}
+
+# Resolve and load config (if provided)
+if ($ConfigFile) {
+  if (-not (Test-Path $ConfigFile)) {
+    Write-Err "Config file not found: $ConfigFile"
+    exit 1
+  }
+  Write-Info "Loading config: $ConfigFile"
+  switch -regex ($ConfigFile.ToLower()) {
+    '\.json$' { Load-JsonConfig $ConfigFile }
+    '\.(yaml|yml)$' { Load-YamlConfig $ConfigFile }
+    default { Load-EnvConfig $ConfigFile }
+  }
+
+  # Export env vars for keys (without overwriting explicit env already set by user)
+  foreach ($k in $script:Cfg.Keys) {
+    $v = $script:Cfg[$k]
+    if ($v -is [System.Collections.IEnumerable] -and -not ($v -is [string])) {
+      # arrays kept in Cfg; for env compatibility, join with commas
+      $joined = ($v -join ",")
+      if (-not $env:$k) { [Environment]::SetEnvironmentVariable($k, $joined, "Process") }
+    } else {
+      if (-not $env:$k) { [Environment]::SetEnvironmentVariable($k, "$v", "Process") }
+    }
+  }
+
+  # Force strict non-interactive + assume-yes when using config file
+  $script:NonInteractive = $true
+  $script:AssumeYes = $true
+  Write-Info "Non-interactive mode forced via config file."
+}
+
+# Convenience getters from config/env (with optional fallback)
+function Get-Cfg([string]$Key, [object]$Default=$null) {
+  if ($script:Cfg.Contains($Key)) { return $script:Cfg[$Key] }
+  $envVal = (Get-Item env:$Key -ErrorAction SilentlyContinue).Value
+  if ($envVal) { return $envVal }
+  return $Default
+}
+
+# -------------------- Package managers --------------------
 function Ensure-Winget {
   if (Test-Command winget) { return $true }
   Write-Warn "winget not found."
@@ -78,7 +231,7 @@ function Ensure-Choco {
   return (Test-Command choco)
 }
 
-# ---- Core installers ----
+# -------------------- Core installers --------------------
 function Maybe-Install-Git {
   if (Test-Command git) { Write-Ok "git found: $(git --version)"; return }
   if (-not (Prompt-YesNo -Message "Git not found. Install Git now?" -Default $false)) { Write-Err "Git is required to clone repos."; return }
@@ -182,7 +335,7 @@ function Maybe-Install-Make {
   Refresh-EnvPath
 }
 
-# ---- Ecosystem installers ----
+# -------------------- Ecosystem installers --------------------
 # Node via nvm-windows
 function Maybe-Install-NvmWindows {
   if (Test-Command nvm) { Write-Ok "nvm-windows found: $(nvm version)"; return $true }
@@ -307,8 +460,12 @@ function Invoke-GitClone {
   Write-Info ("Current directory: " + (Get-Location))
   Write-Info ("Target folder: " + $target)
 
-  # If target exists, ask what to do
+  # If target exists, ask what to do (unless non-interactive: default to Skip)
   if (Test-Path $target) {
+    if ($script:NonInteractive) {
+      Write-Warn "Destination path '$target' exists -> skipping in non-interactive mode."
+      return $false
+    }
     Write-Warn "Destination path '$target' already exists."
     $choice = Read-Host "Choose: [S]kip, [O]verwrite, [R]ename (default: S)"
     switch (($choice | ForEach-Object { $_.ToString().ToLower() })) {
@@ -365,11 +522,55 @@ function Invoke-GitClone {
 function Step-WorkspaceAndClone {
   Maybe-Install-Git
 
-  $workspace = Read-InputWithRetry -Prompt "Enter a workspace name" -Validate { param($x) return (-not [string]::IsNullOrWhiteSpace($x)) }
-  if (-not $workspace) { Write-Err "No valid workspace name after 5 attempts. Skipping workspace setup."; return }
+  # Workspace from config/env if available
+  $ws = (Get-Cfg "QUICKUP_WORKSPACE")
+  $workspace = $null
+  if ($ws) {
+    $workspace = "$ws"
+    Write-Info "Using workspace from config: $workspace"
+  } else {
+    $workspace = Read-InputWithRetry -Prompt "Enter a workspace name" -Validate { param($x) return (-not [string]::IsNullOrWhiteSpace($x)) }
+  }
+  if (-not $workspace) { Write-Err "No valid workspace name. Skipping workspace setup."; return }
   New-Item -ItemType Directory -Force -Path $workspace | Out-Null
   Set-Location $workspace
 
+  # Repos + optional folders from config/env if present
+  $reposVal = (Get-Cfg "QUICKUP_REPOS")
+  $foldersVal = (Get-Cfg "QUICKUP_REPO_FOLDERS")
+  $repos = @()
+  $folders = @()
+
+  if ($reposVal) {
+    if ($reposVal -is [System.Array]) { $repos = @($reposVal) }
+    else { $repos = @($reposVal -split ",") }
+    if ($foldersVal) {
+      if ($foldersVal -is [System.Array]) { $folders = @($foldersVal) }
+      else { $folders = @($foldersVal -split ",") }
+    }
+  }
+
+  if ($repos.Count -gt 0) {
+    # Non-interactive cloning from config
+    for ($i=0; $i -lt $repos.Count; $i++) {
+      $repo = $repos[$i].Trim()
+      if (-not $repo) { continue }
+      $folder = $null
+      if ($i -lt $folders.Count) { $folder = $folders[$i].Trim() }
+      $ok = Invoke-GitClone -Repo $repo -Folder $folder
+      if ($ok) {
+        if ($folder) { $script:Cloned += $folder }
+        else {
+          $name = [IO.Path]::GetFileNameWithoutExtension($repo.TrimEnd('/'))
+          if ($name.EndsWith(".git")) { $name = $name.Substring(0, $name.Length-4) }
+          $script:Cloned += $name
+        }
+      }
+    }
+    return
+  }
+
+  # Interactive path (original behavior)
   $count = Read-InputWithRetry -Prompt "How many repos would you like to clone? (e.g. 2)" -Validate { param($x) return ($x -as [int] -and [int]$x -ge 1) }
   if (-not $count) { Write-Err "Invalid repo count after 5 attempts. Skipping clone step."; return }
   $count = [int]$count
@@ -417,8 +618,17 @@ function Step-ToolchainsPerRepo {
     try {
       if (Is-FlutterRepo) {
         Write-Info "Flutter project detected."
-        if (Prompt-YesNo -Message "Install Flutter SDK?" -Default $false) { Maybe-Install-Flutter }
-        if (Prompt-YesNo -Message "Install FVM?" -Default $false) { Maybe-Install-FVM }
+        $wantFlutter = $true
+        if (-not $script:NonInteractive) { $wantFlutter = (Prompt-YesNo -Message "Install Flutter SDK?" -Default $false) }
+        if ($wantFlutter) { Maybe-Install-Flutter }
+
+        $wantFvm = $false
+        if ($script:NonInteractive) {
+          $wantFvm = $false
+        } else {
+          $wantFvm = (Prompt-YesNo -Message "Install FVM?" -Default $false)
+        }
+        if ($wantFvm) { Maybe-Install-FVM }
         $pubBin = Join-Path $env:USERPROFILE ".pub-cache\bin"; Try-AddPath $pubBin
       }
       if (Is-NodeRepo) {
@@ -426,9 +636,11 @@ function Step-ToolchainsPerRepo {
         $nvmReady = Maybe-Install-NvmWindows
         if ($nvmReady -and (Test-Command nvm)) {
           $desired = ""
-          if (Test-Path ".nvmrc") { $desired = (Get-Content ".nvmrc" -Raw).Trim() }
+          $cfgNode = (Get-Cfg "QUICKUP_NODE_VERSION")
+          if ($cfgNode) { $desired = "$cfgNode" }
+          elseif (Test-Path ".nvmrc") { $desired = (Get-Content ".nvmrc" -Raw).Trim() }
           if (-not $desired) { $desired = (Read-NodeEngine) }
-          if (-not $desired) {
+          if (-not $desired -and -not $script:NonInteractive) {
             $tmp = Read-InputWithRetry -Prompt "Enter Node version to install (e.g. 20.11.1 or 20)" -Validate { param($x) return ($x -match '^[0-9]+(\.[0-9]+)*$') } -Attempts 5
             if ($tmp) { $desired = $tmp }
           }
@@ -441,7 +653,13 @@ function Step-ToolchainsPerRepo {
         Write-Info "Python project detected."
         Ensure-PythonTools
         if (Test-Command python) {
-          if (Prompt-YesNo -Message "Create a virtual environment (.venv) and install requirements?" -Default $false) {
+          $doVenv = $false
+          if ($script:NonInteractive) {
+            $doVenv = $false
+          } else {
+            $doVenv = (Prompt-YesNo -Message "Create a virtual environment (.venv) and install requirements?" -Default $false)
+          }
+          if ($doVenv) {
             try { python -m venv .venv } catch {}
             $venvActivate = Join-Path (Get-Location) ".venv\Scripts\Activate.ps1"
             if (Test-Path $venvActivate) { & $venvActivate }
@@ -451,9 +669,11 @@ function Step-ToolchainsPerRepo {
       }
       if (Is-JavaRepo) {
         Write-Info "Java project detected."
-        $jv = ""
-        if (Test-Path ".java-version") { $jv = (Get-Content ".java-version" -Raw).Trim() }
-        if (-not $jv) { $jv = Read-InputWithRetry -Prompt "Enter Java version (8/11/17/21)" -Validate { param($x) return ($x -match '^(8|11|17|21)$') } -Attempts 5 }
+        $jv = (Get-Cfg "QUICKUP_JAVA_VERSION")
+        if (-not $jv -and (Test-Path ".java-version")) { $jv = (Get-Content ".java-version" -Raw).Trim() }
+        if (-not $jv -and -not $script:NonInteractive) {
+          $jv = Read-InputWithRetry -Prompt "Enter Java version (8/11/17/21)" -Validate { param($x) return ($x -match '^(8|11|17|21)$') } -Attempts 5
+        }
         if ($jv) { Install-Java $jv }
       }
     } finally {
@@ -470,6 +690,33 @@ function Step-SelectAndRun {
     $script:Cloned = $dirs
   }
 
+  # If config explicitly disables run, skip (default preserves original behavior)
+  $enableRun = (Get-Cfg "QUICKUP_ENABLE_RUN")
+  if ($enableRun -ne $null -and "$enableRun" -eq "0") {
+    Write-Info "Run step disabled by config (QUICKUP_ENABLE_RUN=0)."
+    return
+  }
+
+  if ($script:NonInteractive) {
+    # Auto-run best effort per first repo
+    $project = $script:Cloned[0]
+    Push-Location $project
+    try {
+      $detected = Detect-RunOption
+      switch ($detected) {
+        "make"   { if (Test-Command make) { Write-Info "Auto: make up…"; & make up } }
+        "compose"{ if (Test-Command docker) { Write-Info "Auto: docker compose up -d…"; docker compose up -d } }
+        "yarn"   { try { corepack enable *> $null } catch {}; if (Test-Command yarn) { if (Test-Path "yarn.lock") { yarn install --frozen-lockfile } else { yarn install }; yarn start } }
+        "pnpm"   { try { corepack enable *> $null } catch {}; if (Test-Command pnpm) { pnpm install; pnpm start } }
+        "npm"    { if (Test-Command npm) { if (Test-Path "package-lock.json") { npm ci } else { npm install }; npm run start } }
+        default  { Write-Warn "No run method detected for $project; skipping." }
+      }
+    } finally { Pop-Location }
+    Write-Ok "Run step completed (non-interactive)."
+    return
+  }
+
+  # Interactive (original behavior)
   Write-Host ""
   Write-Info "Select a project directory:"
   for ($i=0; $i -lt $script:Cloned.Count; $i++) { Write-Host "[$($i+1)] $($script:Cloned[$i])" }
