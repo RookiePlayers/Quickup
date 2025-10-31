@@ -1,8 +1,9 @@
 #Requires -Version 5.1
-# Quickup Windows Setup
-# Self-contained, robust, default-no prompts, retry logic, and no missing functions.
+# Quickup Windows Setup (self-contained, resilient)
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+# Prevent PS7+ from promoting native non-zero exits to terminating errors
+$global:PSNativeCommandUseErrorActionPreference = $false
 
 function Write-Info { param([string]$m) Write-Host "[INFO] $m" -ForegroundColor Cyan }
 function Write-Ok   { param([string]$m) Write-Host "[DONE] $m" -ForegroundColor Green }
@@ -94,18 +95,82 @@ function Maybe-Install-Git {
   if (Test-Command git) { Write-Ok "git installed: $(git --version)" } else { Write-Err "git still missing after attempted install." }
 }
 
-function Maybe-Install-DockerDesktop {
-  if (Test-Command docker) { Write-Ok "docker found: $(docker --version)" }
-  else {
-    if (-not (Prompt-YesNo -Message "Docker Desktop not found. Install Docker Desktop now?" -Default $false)) { Write-Warn "Docker not installed. Docker-based run options may fail."; return }
-    if (Ensure-Winget) { winget install --id Docker.DockerDesktop -e --accept-source-agreements --accept-package-agreements; Start-Sleep -Seconds 2; Start-Process "Docker Desktop" -ErrorAction SilentlyContinue | Out-Null }
-    elseif (Ensure-Choco) { choco install docker-desktop -y; Start-Process "Docker Desktop" -ErrorAction SilentlyContinue | Out-Null }
-    else { Write-Warn "No package manager available."; if (Prompt-YesNo -Message "Open Docker Desktop download page?" -Default $true) { Start-Process "https://www.docker.com/products/docker-desktop/" | Out-Null } }
+function Start-DockerDesktopSafe {
+  try {
+    $candidates = @(
+      "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe",
+      "$env:ProgramFiles\Docker\Docker\Docker Desktop\Docker Desktop.exe",
+      "$env:LOCALAPPDATA\Docker\Docker\Docker Desktop.exe"
+    )
+    foreach ($exe in $candidates) {
+      if (Test-Path $exe) {
+        Write-Info "Starting Docker Desktop: $exe"
+        Start-Process -FilePath $exe -ErrorAction SilentlyContinue | Out-Null
+        return $true
+      }
+    }
+    try {
+      Start-Process "Docker Desktop" -ErrorAction Stop | Out-Null
+      return $true
+    } catch {
+      Write-Warn "Could not find Docker Desktop executable in common paths or by alias."
+      return $false
+    }
+  } catch {
+    Write-Warn "Failed to start Docker Desktop: $($_.Exception.Message)"
+    return $false
   }
+}
+
+function Maybe-Install-DockerDesktop {
+  if (Test-Command docker) {
+    Write-Ok "docker found: $(docker --version)"
+  } else {
+    if (-not (Prompt-YesNo -Message "Docker Desktop not found. Install Docker Desktop now?" -Default $false)) {
+      Write-Warn "Docker not installed. Docker-based run options may fail."
+      return
+    }
+
+    $installed = $false
+    if (Ensure-Winget) {
+      try {
+        winget install --id Docker.DockerDesktop -e --accept-source-agreements --accept-package-agreements
+        $installed = $true
+      } catch {
+        Write-Warn "winget install reported: $($_.Exception.Message)"
+      }
+    } elseif (Ensure-Choco) {
+      try {
+        choco install docker-desktop -y
+        $installed = $true
+      } catch {
+        Write-Warn "choco install reported: $($_.Exception.Message)"
+      }
+    } else {
+      Write-Warn "No package manager available."
+      if (Prompt-YesNo -Message "Open Docker Desktop download page?" -Default $true) {
+        Start-Process "https://www.docker.com/products/docker-desktop/" | Out-Null
+      }
+    }
+
+    Start-Sleep -Seconds 2
+    [void](Start-DockerDesktopSafe)
+  }
+
+  # If CLI not yet on PATH in current session, add common bin
+  $dockerBin = "$env:ProgramFiles\Docker\Docker\resources\bin"
+  if (-not (Test-Command docker) -and (Test-Path $dockerBin)) { Try-AddPath $dockerBin }
+
   if (Test-Command docker) {
     Write-Info "Checking Docker daemon…"
-    $ok = $false; 1..20 | ForEach-Object { if (docker info *> $null) { $ok = $true; break } ; Start-Sleep -Seconds 2 }
-    if ($ok) { Write-Ok "Docker daemon reachable." } else { Write-Warn "Docker daemon not ready. Ensure Docker Desktop is running." }
+    $ok = $false
+    1..20 | ForEach-Object {
+      try { docker info *> $null; $ok = $true; break } catch { Start-Sleep -Seconds 2 }
+    }
+    if ($ok) { Write-Ok "Docker daemon reachable." }
+    else     { Write-Warn "Docker daemon not ready yet. Ensure Docker Desktop is running." }
+  } else {
+    Write-Warn "Docker CLI not found on PATH yet. You may need to open a new shell after installation."
   }
 }
 
@@ -225,7 +290,7 @@ function Detect-RunOption {
   return ""
 }
 
-
+# ---------- Smart git clone ----------
 function Invoke-GitClone {
   param(
     [Parameter(Mandatory=$true)][string]$Repo,
@@ -284,10 +349,10 @@ function Invoke-GitClone {
     Write-Err "git clone failed (exit $code) for: $Repo"
     if ($out) { $out | ForEach-Object { Write-Host $_ } }
     Write-Warn "Common causes:
-    - Folder exists / permissions (check the path above).
-    - Private repo auth (use PAT on HTTPS or set up SSH keys).
+    - Folder exists / permissions (see path above).
+    - Private repo auth (use PAT for HTTPS, or set up SSH keys).
     - Proxy / firewall (configure git proxy).
-    - Long paths: run once → git config --system core.longpaths true"
+    - Long paths: run once -> git config --system core.longpaths true"
     return $false
   }
 
@@ -295,6 +360,7 @@ function Invoke-GitClone {
   Write-Ok "Clone succeeded."
   return $true
 }
+
 # ---------- Steps ----------
 function Step-WorkspaceAndClone {
   Maybe-Install-Git
@@ -317,17 +383,24 @@ function Step-WorkspaceAndClone {
       return ($u -match '^https?://.+|^git@.+:.+')
     }
     if (-not $repo) { Write-Warn "Skipping this repo (invalid URL after retries)."; continue }
+
     $folder = Read-Host "Optional folder name (Enter for default)"
+    $clonedOk = $false
     if ([string]::IsNullOrWhiteSpace($folder)) {
-      Invoke-GitClone -Repo $repo
-      $name = [IO.Path]::GetFileNameWithoutExtension($repo.TrimEnd('/'))
-      if ($name.EndsWith(".git")) { $name = $name.Substring(0, $name.Length-4) }
-      $script:Cloned += $name
-      Write-Ok "Cloned into .\$name"
+      $clonedOk = Invoke-GitClone -Repo $repo
+      if ($clonedOk) {
+        $name = [IO.Path]::GetFileNameWithoutExtension($repo.TrimEnd('/'))
+        if ($name.EndsWith(".git")) { $name = $name.Substring(0, $name.Length-4) }
+        $script:Cloned += $name
+        Write-Ok "Cloned into .\$name"
+      }
     } else {
-      Invoke-GitClone -Repo $repo -Folder $folder
-      $script:Cloned += $folder
-      Write-Ok "Cloned into .\$folder"
+      if (Test-Path $folder) { Write-Warn "Destination '$folder' already exists; will trigger skip/overwrite/rename prompt."; }
+      $clonedOk = Invoke-GitClone -Repo $repo -Folder $folder
+      if ($clonedOk) {
+        $script:Cloned += $folder
+        Write-Ok "Cloned into .\$folder"
+      }
     }
   }
 }
