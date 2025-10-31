@@ -38,6 +38,23 @@ function Is-WSL {
   return $false
 }
 
+# --- PATH helpers (reload current session) ---
+function Refresh-EnvPath {
+  $machine = [Environment]::GetEnvironmentVariable('Path','Machine')
+  $user    = [Environment]::GetEnvironmentVariable('Path','User')
+  $global:env:Path = ($machine + ';' + $user).TrimEnd(';')
+}
+
+function Try-AddPath {
+  param([string]$Dir)
+  if (Test-Path $Dir) {
+    $parts = $env:Path -split ';' | ForEach-Object { $_.Trim() }
+    if (-not ($parts -contains $Dir)) {
+      $global:env:Path += ';' + $Dir
+    }
+  }
+}
+
 # --- Package managers ---
 function Ensure-Winget {
   if (Test-Command winget) { return $true }
@@ -63,7 +80,9 @@ function Ensure-Choco {
 # --- Consent-first installers ---
 function Maybe-Install-Git {
   if (Test-Command git) { Write-Ok "git found: $(git --version)"; return }
-  if (-not (Prompt-YesNo -Message "Git not found. Install Git now?" -Default $true)) { Write-Err "Git is required to clone repos."; return }
+  if (-not (Prompt-YesNo -Message "Git not found. Install Git now?" -Default $true)) {
+    Write-Err "Git is required to clone repos."; return
+  }
 
   if (Ensure-Winget) {
     winget install --id Git.Git -e --accept-source-agreements --accept-package-agreements
@@ -75,7 +94,18 @@ function Maybe-Install-Git {
       Start-Process "https://git-scm.com/download/win" | Out-Null
     }
   }
-  if (Test-Command git) { Write-Ok "git installed." } else { Write-Err "git still missing after attempted install." }
+
+  # Refresh PATH for this session and add typical Git dirs
+  Refresh-EnvPath
+  @(
+    "C:\Program Files\Git\cmd",
+    "C:\Program Files\Git\bin",
+    "C:\Program Files (x86)\Git\cmd",
+    "C:\Program Files\Git\usr\bin"
+  ) | ForEach-Object { Try-AddPath $_ }
+
+  if (Test-Command git) { Write-Ok "git installed: $(git --version)" }
+  else { Write-Err "git still missing after attempted install. Open a NEW PowerShell window and try again." }
 }
 
 function Maybe-Install-DockerDesktop {
@@ -128,6 +158,8 @@ function Maybe-Install-NodeLTS {
       Start-Process "https://nodejs.org/" | Out-Null
     }
   }
+  # Refresh PATH in case Node just installed
+  Refresh-EnvPath
   if (Test-Command node) { Write-Ok "Node ready: $(node -v)" } else { Write-Err "Node still missing after attempted install." }
 }
 
@@ -146,7 +178,8 @@ function Maybe-Ensure-Yarn {
   if (Prompt-YesNo -Message "Yarn not found. Activate Yarn via Corepack?" -Default $true) {
     try { corepack prepare yarn@stable --activate } catch {}
   }
-  if (Test-Command yarn) { Write-Ok "Yarn ready: $(yarn -v)"; } else { Write-Warn "Yarn still unavailable." }
+  Refresh-EnvPath
+  if (Test-Command yarn) { Write-Ok "Yarn ready: $(yarn -v)" } else { Write-Warn "Yarn still unavailable." }
 }
 
 function Maybe-Ensure-Pnpm {
@@ -157,7 +190,8 @@ function Maybe-Ensure-Pnpm {
   if (Prompt-YesNo -Message "PNPM not found. Activate PNPM via Corepack?" -Default $true) {
     try { corepack prepare pnpm@latest --activate } catch {}
   }
-  if (Test-Command pnpm) { Write-Ok "PNPM ready: $(pnpm -v)"; } else { Write-Warn "PNPM still unavailable." }
+  Refresh-EnvPath
+  if (Test-Command pnpm) { Write-Ok "PNPM ready: $(pnpm -v)" } else { Write-Warn "PNPM still unavailable." }
 }
 
 function Maybe-Install-Make {
@@ -179,6 +213,7 @@ function Maybe-Install-Make {
     Write-Warn "No package manager available. You can install MSYS2 or use Chocolatey later."
   }
 
+  Refresh-EnvPath
   if (Test-Command make) { Write-Ok "make installed." } else { Write-Warn "make still not detected; continuing." }
 }
 
