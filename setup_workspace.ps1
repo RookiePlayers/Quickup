@@ -1,3 +1,4 @@
+
 #Requires -Version 5.1
 $ErrorActionPreference = "Stop"
 
@@ -70,7 +71,7 @@ function Maybe-Install-Git {
     choco install git -y
   } else {
     Write-Warn "No package manager available."
-    if (Prompt-YesNo -Message "Open Git download page?" -Default $true)) {
+    if (Prompt-YesNo -Message "Open Git download page?" -Default $true) {
       Start-Process "https://git-scm.com/download/win" | Out-Null
     }
   }
@@ -94,13 +95,12 @@ function Maybe-Install-DockerDesktop {
       Start-Process "Docker Desktop" -ErrorAction SilentlyContinue | Out-Null
     } else {
       Write-Warn "No package manager available."
-      if (Prompt-YesNo -Message "Open Docker Desktop download page?" -Default $true)) {
+      if (Prompt-YesNo -Message "Open Docker Desktop download page?" -Default $true) {
         Start-Process "https://www.docker.com/products/docker-desktop/" | Out-Null
       }
     }
   }
 
-  # Check daemon
   if (Test-Command docker) {
     Write-Info "Checking Docker daemon… (this can take a little while after first launch)"
     $ok = $false
@@ -124,7 +124,7 @@ function Maybe-Install-NodeLTS {
     choco install nodejs-lts -y
   } else {
     Write-Warn "No package manager available."
-    if (Prompt-YesNo -Message "Open Node.js download page?" -Default $true)) {
+    if (Prompt-YesNo -Message "Open Node.js download page?" -Default $true) {
       Start-Process "https://nodejs.org/" | Out-Null
     }
   }
@@ -146,7 +146,7 @@ function Maybe-Ensure-Yarn {
   if (Prompt-YesNo -Message "Yarn not found. Activate Yarn via Corepack?" -Default $true) {
     try { corepack prepare yarn@stable --activate } catch {}
   }
-  if (Test-Command yarn) { Write-Ok "Yarn ready: $(yarn -v)" } else { Write-Warn "Yarn still unavailable." }
+  if (Test-Command yarn) { Write-Ok "Yarn ready: $(yarn -v)"; } else { Write-Warn "Yarn still unavailable." }
 }
 
 function Maybe-Ensure-Pnpm {
@@ -157,7 +157,7 @@ function Maybe-Ensure-Pnpm {
   if (Prompt-YesNo -Message "PNPM not found. Activate PNPM via Corepack?" -Default $true) {
     try { corepack prepare pnpm@latest --activate } catch {}
   }
-  if (Test-Command pnpm) { Write-Ok "PNPM ready: $(pnpm -v)" } else { Write-Warn "PNPM still unavailable." }
+  if (Test-Command pnpm) { Write-Ok "PNPM ready: $(pnpm -v)"; } else { Write-Warn "PNPM still unavailable." }
 }
 
 function Maybe-Install-Make {
@@ -167,11 +167,10 @@ function Maybe-Install-Make {
     return
   }
 
-  # Prefer Chocolatey (cleanest). Winget has poor/varied make packages.
   if (Ensure-Choco) {
     choco install make -y
   } elseif (Ensure-Winget) {
-    Write-Warn "winget does not have a great 'make' story. Consider MSYS2."
+    Write-Warn "winget does not have a great 'make' package. Consider MSYS2."
     if (Prompt-YesNo -Message "Install MSYS2 to get make (you'll run pacman inside MSYS2)?" -Default $false) {
       winget install --id MSYS2.MSYS2 -e --accept-source-agreements --accept-package-agreements
       Write-Info "Open MSYS2 shell and run: pacman -S --needed base-devel make"
@@ -201,8 +200,12 @@ function Get-ComposeFile {
 
 function Has-PackageJsonStart {
   if (Test-Path "package.json") {
-    $json = Get-Content "package.json" -Raw | ConvertFrom-Json -ErrorAction SilentlyContinue
-    return [bool]($json.scripts.start)
+    try {
+      $json = Get-Content "package.json" -Raw | ConvertFrom-Json -ErrorAction Stop
+      return [bool]($json.scripts.start)
+    } catch {
+      return $false
+    }
   }
   return $false
 }
