@@ -8,7 +8,25 @@ function Write-Err  { param([string]$m) Write-Host "[ERR ] $m" -ForegroundColor 
 
 function Test-Command { param([string]$Name) return [bool](Get-Command $Name -ErrorAction SilentlyContinue) }
 
-# ---- OS / Env detection ----
+function Prompt-YesNo {
+  param(
+    [Parameter(Mandatory=$true)][string]$Message,
+    [bool]$Default=$true
+  )
+  $suffix = if ($Default) { "[Y/n]" } else { "[y/N]" }
+  while ($true) {
+    $resp = Read-Host "$Message $suffix"
+    if ([string]::IsNullOrWhiteSpace($resp)) { return $Default }
+    switch ($resp.ToLower()) {
+      "y" { return $true }
+      "yes" { return $true }
+      "n" { return $false }
+      "no" { return $false }
+      default { Write-Host "Please answer y or n." }
+    }
+  }
+}
+
 function Is-WSL {
   try {
     if (Test-Path -Path "/proc/version") {
@@ -19,35 +37,74 @@ function Is-WSL {
   return $false
 }
 
-# ---- Install helpers (best-effort via winget) ----
-function Ensure-Git {
-  if (Test-Command git) { Write-Ok "git found: $(git --version)"; return }
-  Write-Warn "git not found; attempting install via winget…"
-  if (Test-Command winget) {
-    winget install --id Git.Git -e --accept-source-agreements --accept-package-agreements
-  } else {
-    Write-Err "winget not available. Install Git from https://git-scm.com/download/win"
+# --- Package managers ---
+function Ensure-Winget {
+  if (Test-Command winget) { return $true }
+  Write-Warn "winget not found."
+  if (Prompt-YesNo -Message "Open Microsoft Store to install 'App Installer' (winget)?" -Default $true) {
+    Start-Process "ms-windows-store://pdp/?ProductId=9NBLGGH4NNS1" | Out-Null
+    Write-Info "After installing App Installer, reopen PowerShell and re-run this script if winget is still missing."
   }
-  if (Test-Command git) { Write-Ok "git installed." } else { Write-Err "git still missing." }
+  return (Test-Command winget)
 }
 
-function Ensure-DockerDesktop {
+function Ensure-Choco {
+  if (Test-Command choco) { return $true }
+  Write-Warn "Chocolatey not found."
+  if (Prompt-YesNo -Message "Install Chocolatey now?" -Default $false) {
+    Set-ExecutionPolicy Bypass -Scope Process -Force
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+    Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
+  }
+  return (Test-Command choco)
+}
+
+# --- Consent-first installers ---
+function Maybe-Install-Git {
+  if (Test-Command git) { Write-Ok "git found: $(git --version)"; return }
+  if (-not (Prompt-YesNo -Message "Git not found. Install Git now?" -Default $true)) { Write-Err "Git is required to clone repos."; return }
+
+  if (Ensure-Winget) {
+    winget install --id Git.Git -e --accept-source-agreements --accept-package-agreements
+  } elseif (Ensure-Choco) {
+    choco install git -y
+  } else {
+    Write-Warn "No package manager available."
+    if (Prompt-YesNo -Message "Open Git download page?" -Default $true)) {
+      Start-Process "https://git-scm.com/download/win" | Out-Null
+    }
+  }
+  if (Test-Command git) { Write-Ok "git installed." } else { Write-Err "git still missing after attempted install." }
+}
+
+function Maybe-Install-DockerDesktop {
   if (Test-Command docker) {
     Write-Ok "docker found: $(docker --version)"
   } else {
-    Write-Warn "docker not found; attempting Docker Desktop install via winget…"
-    if (Test-Command winget) {
+    if (-not (Prompt-YesNo -Message "Docker Desktop not found. Install Docker Desktop now?" -Default $true)) {
+      Write-Warn "Docker not installed. Docker-based run options may fail."
+      return
+    }
+    if (Ensure-Winget) {
       winget install --id Docker.DockerDesktop -e --accept-source-agreements --accept-package-agreements
+      Start-Sleep -Seconds 2
+      Start-Process "Docker Desktop" -ErrorAction SilentlyContinue | Out-Null
+    } elseif (Ensure-Choco) {
+      choco install docker-desktop -y
       Start-Process "Docker Desktop" -ErrorAction SilentlyContinue | Out-Null
     } else {
-      Write-Err "winget not available. Install Docker Desktop from https://www.docker.com/products/docker-desktop/"
+      Write-Warn "No package manager available."
+      if (Prompt-YesNo -Message "Open Docker Desktop download page?" -Default $true)) {
+        Start-Process "https://www.docker.com/products/docker-desktop/" | Out-Null
+      }
     }
   }
 
+  # Check daemon
   if (Test-Command docker) {
-    Write-Info "Checking Docker daemon (this can take ~seconds after first launch)…"
+    Write-Info "Checking Docker daemon… (this can take a little while after first launch)"
     $ok = $false
-    1..15 | ForEach-Object {
+    1..20 | ForEach-Object {
       if (docker info *> $null) { $ok = $true; break }
       Start-Sleep -Seconds 2
     }
@@ -55,58 +112,78 @@ function Ensure-DockerDesktop {
   }
 }
 
-function Ensure-NodeLTS {
+function Maybe-Install-NodeLTS {
   if (Test-Command node) { Write-Ok "node found: $(node -v)"; return }
-  Write-Warn "Node.js not found; installing Node LTS via winget…"
-  if (Test-Command winget) {
-    winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements
-  } else {
-    Write-Err "winget not available. Install Node LTS from https://nodejs.org/"
+  if (-not (Prompt-YesNo -Message "Node.js LTS not found. Install Node LTS now?" -Default $true)) {
+    Write-Warn "Node not installed. Yarn/PNPM/npm run options may fail."
+    return
   }
-  if (Test-Command node) { Write-Ok "Node ready: $(node -v)" } else { Write-Err "Node still missing." }
+  if (Ensure-Winget) {
+    winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements
+  } elseif (Ensure-Choco) {
+    choco install nodejs-lts -y
+  } else {
+    Write-Warn "No package manager available."
+    if (Prompt-YesNo -Message "Open Node.js download page?" -Default $true)) {
+      Start-Process "https://nodejs.org/" | Out-Null
+    }
+  }
+  if (Test-Command node) { Write-Ok "Node ready: $(node -v)" } else { Write-Err "Node still missing after attempted install." }
 }
 
-function Enable-Corepack {
-  if (Test-Command node) {
-    try { & node -e "require('child_process').spawnSync('corepack',['enable'],{stdio:'inherit'})" } catch {}
+function Maybe-Enable-Corepack {
+  if (-not (Test-Command node)) { return }
+  if (Prompt-YesNo -Message "Enable Corepack (Yarn/PNPM shims)?" -Default $true) {
     try { corepack enable *> $null } catch {}
   }
 }
 
-function Ensure-Yarn {
-  Ensure-NodeLTS
-  Enable-Corepack
-  if (-not (Test-Command yarn)) {
-    Write-Info "Activating Yarn via Corepack…"
+function Maybe-Ensure-Yarn {
+  if (-not (Test-Command node)) { Maybe-Install-NodeLTS }
+  if (-not (Test-Command node)) { return }
+  Maybe-Enable-Corepack
+  if (Test-Command yarn) { Write-Ok "Yarn ready: $(yarn -v)"; return }
+  if (Prompt-YesNo -Message "Yarn not found. Activate Yarn via Corepack?" -Default $true) {
     try { corepack prepare yarn@stable --activate } catch {}
   }
-  if (Test-Command yarn) { Write-Ok "Yarn ready: $(yarn -v)" } else { Write-Warn "Yarn unavailable." }
+  if (Test-Command yarn) { Write-Ok "Yarn ready: $(yarn -v)" } else { Write-Warn "Yarn still unavailable." }
 }
 
-function Ensure-Pnpm {
-  Ensure-NodeLTS
-  Enable-Corepack
-  if (-not (Test-Command pnpm)) {
-    Write-Info "Activating PNPM via Corepack…"
+function Maybe-Ensure-Pnpm {
+  if (-not (Test-Command node)) { Maybe-Install-NodeLTS }
+  if (-not (Test-Command node)) { return }
+  Maybe-Enable-Corepack
+  if (Test-Command pnpm) { Write-Ok "PNPM ready: $(pnpm -v)"; return }
+  if (Prompt-YesNo -Message "PNPM not found. Activate PNPM via Corepack?" -Default $true) {
     try { corepack prepare pnpm@latest --activate } catch {}
   }
-  if (Test-Command pnpm) { Write-Ok "PNPM ready: $(pnpm -v)" } else { Write-Warn "PNPM unavailable." }
+  if (Test-Command pnpm) { Write-Ok "PNPM ready: $(pnpm -v)" } else { Write-Warn "PNPM still unavailable." }
 }
 
-function Ensure-Npm {
-  Ensure-NodeLTS
-  if (Test-Command npm) { Write-Ok "npm ready: $(npm -v)" } else { Write-Warn "npm unavailable." }
-}
-
-function Get-ComposeCmd {
-  if (Test-Command docker) {
-    # docker compose is the v2 subcommand
-    return "docker compose"
+function Maybe-Install-Make {
+  if (Test-Command make) { Write-Ok "make found: $(make --version | Select-Object -First 1)"; return }
+  if (-not (Prompt-YesNo -Message "Make not found. Attempt to install it now?" -Default $false)) {
+    Write-Warn "Skipping make install. You can still use Docker/Yarn/npm/PNPM run options."
+    return
   }
-  return $null
+
+  # Prefer Chocolatey (cleanest). Winget has poor/varied make packages.
+  if (Ensure-Choco) {
+    choco install make -y
+  } elseif (Ensure-Winget) {
+    Write-Warn "winget does not have a great 'make' story. Consider MSYS2."
+    if (Prompt-YesNo -Message "Install MSYS2 to get make (you'll run pacman inside MSYS2)?" -Default $false) {
+      winget install --id MSYS2.MSYS2 -e --accept-source-agreements --accept-package-agreements
+      Write-Info "Open MSYS2 shell and run: pacman -S --needed base-devel make"
+    }
+  } else {
+    Write-Warn "No package manager available. You can install MSYS2 or use Chocolatey later."
+  }
+
+  if (Test-Command make) { Write-Ok "make installed." } else { Write-Warn "make still not detected; continuing." }
 }
 
-# ---- Detection helpers ----
+# ---- Detection helpers for Run step ----
 function Has-MakeUp {
   if (Test-Path -Path "Makefile") {
     $content = Get-Content "Makefile" -ErrorAction SilentlyContinue
@@ -189,22 +266,25 @@ function Step-WorkspaceAndClone {
   }
 }
 
-# ---- Step 2: Dependencies ----
+# ---- Step 2: Dependencies (consent-first) ----
 function Step-Dependencies {
   if (Is-WSL) {
     Write-Info "Detected WSL. Docker usually comes from Docker Desktop for Windows with 'WSL 2 integration' enabled."
   }
-  Ensure-Git
-  Ensure-DockerDesktop
-  # 'make' is uncommon on Windows; if someone needs it, they can install via MSYS2/Chocolatey.
-  if (Test-Command make) {
-    Write-Ok "make found: $(make --version | Select-Object -First 1)"
-  } else {
-    Write-Warn "make not found. If your repo relies on Make, install via MSYS2/Chocolatey or use another run option."
-  }
+
+  Maybe-Install-Git
+  Maybe-Install-DockerDesktop
+  Maybe-Install-NodeLTS
+  Maybe-Install-Make
 }
 
-# ---- Step 3: Run (auto-detect + manual override) ----
+# ---- Run helpers ----
+function Get-ComposeCmd {
+  if (Test-Command docker) { return "docker compose" }
+  return $null
+}
+
+# ---- Step 3: Run (auto-detect + manual override; consent for PM setup) ----
 function Step-SelectAndRun {
   if (-not $script:Cloned -or $script:Cloned.Count -eq 0) {
     Write-Warn "No tracked clones. Scanning for git repos in current directory…"
@@ -238,7 +318,7 @@ function Step-SelectAndRun {
         switch ($detected) {
           "make" {
             if (Test-Command make) { Write-Info "Auto: make up…"; & make up }
-            else { Write-Warn "make not found; falling back to manual choices."; break }
+            else { Write-Warn "make not found; pick another run option."; break }
           }
           "compose" {
             $compose = Get-ComposeCmd
@@ -246,25 +326,31 @@ function Step-SelectAndRun {
             else { Write-Warn "docker/compose not available."; break }
           }
           "yarn" {
-            Ensure-Yarn
-            Write-Info "Installing deps with yarn…"
-            if (Test-Path "yarn.lock") { yarn install --frozen-lockfile } else { yarn install }
-            Write-Info "Starting with yarn start…"
-            yarn start
+            Maybe-Ensure-Yarn
+            if (Test-Command yarn) {
+              Write-Info "Installing deps with yarn…"
+              if (Test-Path "yarn.lock") { yarn install --frozen-lockfile } else { yarn install }
+              Write-Info "Starting with yarn start…"
+              yarn start
+            }
           }
           "pnpm" {
-            Ensure-Pnpm
-            Write-Info "Installing deps with pnpm…"
-            pnpm install
-            Write-Info "Starting with pnpm start…"
-            pnpm start
+            Maybe-Ensure-Pnpm
+            if (Test-Command pnpm) {
+              Write-Info "Installing deps with pnpm…"
+              pnpm install
+              Write-Info "Starting with pnpm start…"
+              pnpm start
+            }
           }
           "npm" {
-            Ensure-Npm
-            Write-Info "Installing deps with npm…"
-            if (Test-Path "package-lock.json") { npm ci } else { npm install }
-            Write-Info "Starting with npm run start…"
-            npm run start
+            Maybe-Install-NodeLTS
+            if (Test-Command npm) {
+              Write-Info "Installing deps with npm…"
+              if (Test-Path "package-lock.json") { npm ci } else { npm install }
+              Write-Info "Starting with npm run start…"
+              npm run start
+            }
           }
           default {
             Write-Warn "No run method detected. Pick a manual option."
@@ -273,28 +359,34 @@ function Step-SelectAndRun {
       }
       2 {
         if (Test-Command make) { Write-Info "Running: make up…"; & make up }
-        else { Write-Err "make is not installed on Windows by default. Install via MSYS2/Chocolatey." }
+        else { Write-Err "make is not installed. Choose another option or install make." }
       }
       3 {
-        Ensure-Yarn
-        Write-Info "Installing deps with yarn…"
-        if (Test-Path "yarn.lock") { yarn install --frozen-lockfile } else { yarn install }
-        Write-Info "Starting with yarn start…"
-        yarn start
+        Maybe-Ensure-Yarn
+        if (Test-Command yarn) {
+          Write-Info "Installing deps with yarn…"
+          if (Test-Path "yarn.lock") { yarn install --frozen-lockfile } else { yarn install }
+          Write-Info "Starting with yarn start…"
+          yarn start
+        }
       }
       4 {
-        Ensure-Npm
-        Write-Info "Installing deps with npm…"
-        if (Test-Path "package-lock.json") { npm ci } else { npm install }
-        Write-Info "Starting with npm run start…"
-        npm run start
+        Maybe-Install-NodeLTS
+        if (Test-Command npm) {
+          Write-Info "Installing deps with npm…"
+          if (Test-Path "package-lock.json") { npm ci } else { npm install }
+          Write-Info "Starting with npm run start…"
+          npm run start
+        }
       }
       5 {
-        Ensure-Pnpm
-        Write-Info "Installing deps with pnpm…"
-        pnpm install
-        Write-Info "Starting with pnpm start…"
-        pnpm start
+        Maybe-Ensure-Pnpm
+        if (Test-Command pnpm) {
+          Write-Info "Installing deps with pnpm…"
+          pnpm install
+          Write-Info "Starting with pnpm start…"
+          pnpm start
+        }
       }
       6 {
         $compose = Get-ComposeCmd
@@ -313,10 +405,11 @@ function Step-SelectAndRun {
 
 # ---- Main ----
 Write-Info "Step 1/3: Project Workspace & Repository Cloning"
+Maybe-Install-Git
 Step-WorkspaceAndClone
 Write-Host ""
 
-Write-Info "Step 2/3: Dependencies Check (Docker, Git, Make)"
+Write-Info "Step 2/3: Dependencies Check (consent-first installers)"
 Step-Dependencies
 Write-Host ""
 
