@@ -12,3 +12,34 @@ Clone this repo then run the following:
 chmod +x setup_workspace.sh
 ./setup_workspace.sh
 ```
+
+## MacOS Setup
+
+We have created a brew installation for this.
+### Installation
+```bash
+brew tap RookiePlayers/quickup
+brew install quickup
+```
+To start just run the following
+```bash
+quickup
+```
+
+## Linux & wsl setup
+
+### Installation
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/RookiePlayers/Quickup/main/install.sh)
+```
+
+To start just run the following
+```bash
+quickup
+```
+
+## Windows Powershell
+To run this directly in powershell use this command
+```bash
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing https://raw.githubusercontent.com/RookiePlayers/Quickup/main/setup_workspace.ps1 | iex"
+```
