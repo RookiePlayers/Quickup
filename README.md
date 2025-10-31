@@ -69,7 +69,11 @@ Quickup automatically detects whether you’re on native Linux or WSL and adjust
 To run directly in PowerShell without cloning:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing https://raw.githubusercontent.com/RookiePlayers/Quickup/main/setup_workspace.ps1 | iex"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; iex (irm 'https://raw.githubusercontent.com/RookiePlayers/Quickup/main/setup_workspace.ps1')"
+```
+or
+```cmd
+powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; iex (irm 'https://raw.githubusercontent.com/RookiePlayers/Quickup/main/setup_workspace.ps1')"
 ```
 
 This downloads and executes the latest version of the setup script.

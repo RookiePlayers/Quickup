@@ -225,6 +225,70 @@ function Detect-RunOption {
   return ""
 }
 
+
+function Invoke-GitClone {
+  param(
+    [Parameter(Mandatory=$true)][string]$Repo,
+    [Parameter(Mandatory=$false)][string]$Folder
+  )
+
+  # Optional debug logs for HTTPS authentication or network issues
+  # $env:GIT_TRACE = "1"
+  # $env:GIT_CURL_VERBOSE = "1"
+
+  $target = if ($Folder) { $Folder } else {
+    $n = [IO.Path]::GetFileNameWithoutExtension($Repo.TrimEnd('/'))
+    if ($n.EndsWith(".git")) { $n = $n.Substring(0, $n.Length - 4) }
+    $n
+  }
+
+  # 🧠 Handle existing folder
+  if (Test-Path $target) {
+    Write-Warn "Destination path '$target' already exists."
+    $choice = Read-Host "Choose: [S]kip, [O]verwrite, [R]ename (default: S)"
+    switch ($choice.ToLower()) {
+      "o" {
+        try {
+          Write-Info "Deleting existing '$target'..."
+          Remove-Item -Recurse -Force -Path $target
+        } catch {
+          Write-Err "Failed to remove existing folder '$target': $($_.Exception.Message)"
+          return $false
+        }
+      }
+      "r" {
+        $suffix = (Get-Random -Minimum 100 -Maximum 999)
+        $target = "${target}_$suffix"
+        Write-Info "Using new folder name: $target"
+      }
+      default {
+        Write-Warn "Skipping clone for $Repo."
+        return $false
+      }
+    }
+  }
+
+  $args = @('clone', '--progress', $Repo, $target)
+  Write-Info "Running: git $($args -join ' ')"
+  $out = & git @args 2>&1
+  $code = $LASTEXITCODE
+
+  if ($code -ne 0) {
+    Write-Err "git clone failed (exit $code) for: $Repo"
+    if ($out) { $out | ForEach-Object { Write-Host $_ } }
+    Write-Warn "Common causes:
+    - Auth required (private repo): use HTTPS with a Personal Access Token (PAT) or set up SSH keys.
+    - Wrong URL: verify the exact repo URL.
+    - Proxy/corporate network issues: set git proxy or try another network.
+    - Existing folder conflicts or permissions.
+    - Long filenames on older Windows setups: git config --system core.longpaths true."
+    return $false
+  }
+
+  if ($out) { $out | ForEach-Object { Write-Host $_ } }
+  Write-Ok "Clone succeeded."
+  return $true
+}
 # ---------- Steps ----------
 function Step-WorkspaceAndClone {
   Maybe-Install-Git
@@ -249,13 +313,13 @@ function Step-WorkspaceAndClone {
     if (-not $repo) { Write-Warn "Skipping this repo (invalid URL after retries)."; continue }
     $folder = Read-Host "Optional folder name (Enter for default)"
     if ([string]::IsNullOrWhiteSpace($folder)) {
-      git clone $repo 2>$null
+      Invoke-GitClone -Repo $repo
       $name = [IO.Path]::GetFileNameWithoutExtension($repo.TrimEnd('/'))
       if ($name.EndsWith(".git")) { $name = $name.Substring(0, $name.Length-4) }
       $script:Cloned += $name
       Write-Ok "Cloned into .\$name"
     } else {
-      git clone $repo $folder 2>$null
+      Invoke-GitClone -Repo $repo -Folder $folder
       $script:Cloned += $folder
       Write-Ok "Cloned into .\$folder"
     }
