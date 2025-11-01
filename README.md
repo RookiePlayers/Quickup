@@ -156,6 +156,64 @@ winget install --id MikeFarah.yq -e
 
 This will load `.env`, `.json`, or `.yaml` configuration automatically and skip all interactive prompts.
 
+## Windows(Chocolatey)
+
+### Install Choco if no already installed
+
+```powershell
+ Set-ExecutionPolicy Bypass -Scope Process -Force
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+```
+Then run this to set your PATH
+```powershell
+ # Define the Chocolatey path
+$chocoPath = 'C:\ProgramData\chocolatey\bin'
+>>
+# Add to User PATH
+$currentUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+if ($currentUserPath -notlike "*$chocoPath*") {
+  [Environment]::SetEnvironmentVariable('Path', "$currentUserPath;$chocoPath", 'User')
+  Write-Host "Added Chocolatey to USER PATH"
+}
+>>
+# Add to Machine PATH (system-wide)
+$currentMachinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+if ($currentMachinePath -notlike "*$chocoPath*") {
+  [Environment]::SetEnvironmentVariable('Path', "$currentMachinePath;$chocoPath", 'Machine')
+  Write-Host "Added Chocolatey to SYSTEM PATH"
+}
+>>
+# Apply to current session
+$env:Path += ";$chocoPath"
+Write-Host "PATH refreshed for this session. You can now run 'choco'."
+PATH refreshed for this session. You can now run 'choco'.
+PS C:\WINDOWS\system32> choco
+Chocolatey v2.5.1
+Please run 'choco --help' or 'choco <command> --help' for help menu.
+```
+
+#### install quickup
+```powershell
+choco install quickup -s -y
+```
+
+#### Run quickup
+
+```powershell
+quickup
+```
+
+#### Run with config file
+```powershell
+# JSON / ENV / YAML (YAML requires yq or PowerShell 7's ConvertFrom-Yaml)
+quickup -ConfigFile .\.config.json
+# or
+quickup -ConfigFile .\.config.yml
+# or set env var once, then just 'quickup'
+$env:QUICKUP_CONFIG_FILE = ".\.env.example"
+quickup
+```
 ---
 
 ## Features Overview
@@ -184,7 +242,7 @@ No more manual setup headaches.
 ---
 
 ## Troubleshooting
-- If a tool (like Git or Docker) isn’t detected after install, restart your shell:
+- If a tool (like Git or Docker) isn't detected after install, restart your shell:
   ```bash
   source ~/.bashrc  # or ~/.zshrc depending on shell
   ```
