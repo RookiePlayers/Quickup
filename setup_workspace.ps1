@@ -30,16 +30,21 @@ if ($env:QUICKUP_SKIP_TOOLCHAINS-and $env:QUICKUP_SKIP_TOOLCHAINS-ne "0") { $scr
 
 # ---------- Prompt helpers ----------
 function Prompt-YesNo {
-  param([Parameter(Mandatory=$true)][string]$Message, [bool]$Default=$false)
+  param(
+    [Parameter(Mandatory=$true)][string]$Message,
+    [bool]$Default = $false  # default = No unless you pass $true
+  )
   if ($script:NonInteractive) { return ($script:AssumeYes -or $Default) }
+
   $suffix = if ($Default) { "[Y/n]" } else { "[y/N]" }
   while ($true) {
     $resp = Read-Host "$Message $suffix"
     if ([string]::IsNullOrWhiteSpace($resp)) { return $Default }
-    switch ($resp.ToLower()) {
-      "y"|"yes" { return $true }
-      "n"|"no"  { return $false }
-      default   { Write-Host "Please answer y or n." }
+
+    switch -Regex ($resp.Trim().ToLower()) {
+      '^(y|yes)$' { return $true }
+      '^(n|no)$'  { return $false }
+      default     { Write-Host "Please answer y or n." }
     }
   }
 }
@@ -81,20 +86,25 @@ function Load-EnvConfig([string]$Path) {
 function Load-JsonConfig([string]$Path) {
   try { $obj = Get-Content -Raw -Path $Path -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop }
   catch { Write-Err "Invalid JSON config: $($_.Exception.Message)"; return }
-  foreach ($prop in $obj.PSObject.Properties) {
-    $script:Cfg[$prop.Name] = $prop.Value
-  }
+  foreach ($prop in $obj.PSObject.Properties) { $script:Cfg[$prop.Name] = $prop.Value }
 }
 function Load-YamlConfig([string]$Path) {
   if (Get-Command yq -ErrorAction SilentlyContinue) {
     try {
       $json = & yq -o=json '.' $Path 2>$null
-      if ($json) { $obj = $json | ConvertFrom-Json; foreach ($p in $obj.PSObject.Properties) { $script:Cfg[$p.Name]=$p.Value }; return }
+      if ($json) {
+        $obj = $json | ConvertFrom-Json
+        foreach ($p in $obj.PSObject.Properties) { $script:Cfg[$p.Name]=$p.Value }
+        return
+      }
     } catch { Write-Warn "yq parse failed: $($_.Exception.Message)" }
   }
   if (Get-Command ConvertFrom-Yaml -ErrorAction SilentlyContinue) {
-    try { $obj = Get-Content -Raw -Path $Path -Encoding UTF8 | ConvertFrom-Yaml; foreach ($p in $obj.PSObject.Properties) { $script:Cfg[$p.Name]=$p.Value }; return }
-    catch { Write-Err "ConvertFrom-Yaml failed: $($_.Exception.Message)"; return }
+    try {
+      $obj = Get-Content -Raw -Path $Path -Encoding UTF8 | ConvertFrom-Yaml
+      foreach ($p in $obj.PSObject.Properties) { $script:Cfg[$p.Name]=$p.Value }
+      return
+    } catch { Write-Err "ConvertFrom-Yaml failed: $($_.Exception.Message)"; return }
   }
   Write-Err "YAML config requires 'yq' or PowerShell 7's ConvertFrom-Yaml."
 }
@@ -308,7 +318,7 @@ function Invoke-GitClone {
     Write-Warn "Destination path '$target' already exists."
     if ($script:NonInteractive) { Write-Warn "Non-interactive: skipping clone for $Repo"; return $false }
     $choice = Read-Host "Choose: [S]kip, [O]verwrite, [R]ename (default: S)"
-    switch (($choice | ForEach-Object { $_.ToString().ToLower() })) {
+    switch ($choice.ToLower()) {
       "o" { try { Remove-Item -Recurse -Force -Path $target } catch { Write-Err "Failed to remove '$target': $($_.Exception.Message)"; return $false } }
       "r" { $suffix = (Get-Random -Minimum 100 -Maximum 999); $target = "${target}_$suffix"; Write-Info "Using new folder name: $target" }
       default { Write-Warn "Skipping clone for $Repo."; return $false }
