@@ -142,7 +142,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager
 
 ### With Config File
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\setup_workspace.ps1 -ConfigFile .\.env.example
+$u   = 'https://raw.githubusercontent.com/RookiePlayers/Quickup/main/setup_workspace.ps1'
+$tmp = Join-Path $env:TEMP 'quickup.ps1'
+Invoke-WebRequest $u -OutFile $tmp
+powershell -NoProfile -ExecutionPolicy Bypass -File $tmp -ConfigFile .\.config.yml
+```
+**If you are going to run with yml make sure to install the following**
+```powershell
+choco install yq -y
+# or
+winget install --id MikeFarah.yq -e
 ```
 
 This will load `.env`, `.json`, or `.yaml` configuration automatically and skip all interactive prompts.
